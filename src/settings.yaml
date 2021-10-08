@@ -2,3 +2,10 @@ core:
   url:
   publicKey:
   privateKey:
+rabbitmq:
+  host:
+  port:
+  username:
+  password:
+  queue:
+  exchange:
