@@ -29,7 +29,15 @@ class SoftwareRouter():
         self.core = None
         self.rabbitmq = None
 
-        self.channels = []
+        self.channel = None
+
+    def _create_channel(self, connection):
+        """
+        Creates the rabbitmq communication channel
+        """
+        self.channel = self.rabbitmq.channel(
+            on_open_callback=self.add_default_queue
+        )
 
     def _load_settings(self, filename):
         """
@@ -42,27 +50,21 @@ class SoftwareRouter():
             logging.error("Settings file not found")
             return None
 
-    def add_channel(self, queue: str, callback: FunctionType):
+    def add_queue(self, queue: str, callback: FunctionType, durable=True):
         """
-        Adds a rabbitmq channel, consuming messages from `queue` with `callback`
-        as callback function to `self.channels`
+        Adds a rabbitmq queue, consuming messages from `queue` with `callback`.
         """
-        channel = self.rabbitmq.channel()
         # make sure that the channel exists
-        channel.queue_declare(queue, durable=True)
+        self.channel.queue_declare(queue, durable=durable)
         # add a message callback to the channel
-        channel.basic_consume(queue=queue, on_message_callback=callback)
-        # start consuming messages
-        channel.start_consuming()
+        self.channel.basic_consume(queue=queue, on_message_callback=callback)
 
-        self.channels += [channel]
-
-    def add_default_channel(self):
+    def add_default_queue(self, channel, ):
         """
-        Adds the default rabbitmq channel as `settings.rabbitmq.queue`.
+        Adds the default rabbitmq queue as `settings.rabbitmq.queue`.
         """
-        self.add_channel(self.settings['rabbitmq']['queue'],
-                         self.queue_callback)
+        self.add_queue(self.settings['rabbitmq']['queue'],
+                       self.queue_callback)
 
     def connect_to_core(self):
         """
@@ -97,10 +99,19 @@ class SoftwareRouter():
                     self.settings['rabbitmq']['username'],
                     self.settings['rabbitmq']['password'])
             )
-            self.rabbitmq = pika.BlockingConnection(connection_params)
+            self.rabbitmq = pika.SelectConnection(connection_params,
+                on_open_callback=self._create_channel
+            )
         except pika.exceptions.AMQPConnectionError:
             logging.error("Couldn't connect to rabbitmq")
             self.rabbitmq = None
+
+    def on_job(self, ch, method, properties, body):
+        """
+        Handles cytomine job requests.
+        """
+        logging.info("Super success! %s", body)
+        ch.basic_ack(method.delivery_tag)
 
     def queue_callback(self, ch, method, properties, body):
         """
@@ -110,8 +121,15 @@ class SoftwareRouter():
         logging.info("Received: %s", msg)
         if msg.get('requestType', None) == 'addProcessingServer':
             logging.info("new processing server: %s", msg['name'])
+            self.add_queue(msg['name'], self.on_job)
 
         ch.basic_ack(method.delivery_tag)
+
+    def start(self):
+        """
+        Starts the rabbitmq ioloop
+        """
+        self.rabbitmq.ioloop.start()
 
 if __name__ ==  "__main__":
 
@@ -131,7 +149,7 @@ if __name__ ==  "__main__":
     # Create software router object
     software_router = SoftwareRouter(args.settings_file)
 
-    # Main loop
+    # Main loop. Mostly used to make sure that all connections are established
     while True:
 
         if not software_router.core:
@@ -145,7 +163,7 @@ if __name__ ==  "__main__":
 
             # Add main channel if the connection worked
             if software_router.rabbitmq:
-                software_router.add_default_channel()
+                software_router.start()
 
         # sleep for a bit before checking again
         time.sleep(10)
