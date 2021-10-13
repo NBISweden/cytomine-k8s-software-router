@@ -6,6 +6,7 @@ This is a Cytomine software router for use in kubernetes.
 import time
 import json
 import logging
+import requests
 from types import FunctionType
 
 import yaml
@@ -83,6 +84,8 @@ class SoftwareRouter():
                 self.core = core
                 return
         except JSONDecodeError:
+            logging.error("Failed to connect to cytomine core")
+        except requests.exceptions.ConnectionError:
             logging.error("Failed to connect to cytomine core")
         except yaml.parser.ParserError:
             logging.error("Failed to read settings yaml file")
