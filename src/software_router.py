@@ -3,16 +3,20 @@
 This is a Cytomine software router for use in kubernetes.
 """
 
+import os
 import time
 import json
 import logging
 import requests
+import tempfile
 from types import FunctionType
 
 import yaml
 
 import pika
 import cytomine
+from cytomine.models.software import Job
+from cytomine.models.property import AttachedFile
 
 from json.decoder import JSONDecodeError
 
@@ -115,13 +119,54 @@ class SoftwareRouter():
         """
         Handles cytomine job requests.
         """
-        logging.info("Super success! %s", body)
+        # TODO: make a proper message parser with content checking
+        msg = json.loads(body)
+        logging.info("msg: %s", msg)
+        if msg['requestType'] == 'execute':
+            logging.info("Starting job %i", msg['jobId'])
+
+            # Fetch the job from core
+            job = Job().fetch(msg['jobId'])
+
+            # fake that the job goes through some statuses
+            for status in [Job.INQUEUE, Job.RUNNING]:
+                job.status = status
+                job.update()
+                time.sleep(3)
+
+            # Make the progress bar move!
+            for progress in range(0, 101, 10):
+                job.progress = progress
+                job.update()
+                time.sleep(.5)
+
+            # report success, and attach a log file to the job.
+            job.status = Job.SUCCESS
+            job.update()
+
+            with tempfile.TemporaryDirectory() as tempdir:
+                filename = os.path.join(tempdir, 'log.out')
+                with open(filename, 'w') as result:
+                    result.write("This was just a fake job. Sorry.\n")
+                    result.flush()
+                    AttachedFile(job, filename).save()
+                    job.update()
+
+
+        elif msg['requestType'] == 'kill':
+            logging.info("Killing job %i", msg['jobId'])
+
+            job = Job().fetch(msg['jobId'])
+            job.status = Job.TERMINATED
+            job.update()
+
         ch.basic_ack(method.delivery_tag)
 
     def queue_callback(self, ch, method, properties, body):
         """
         Callback function that handles rabbitmq messages for the software router.
         """
+        # TODO: make a proper message parser with content checking
         msg = json.loads(body)
         logging.info("Received: %s", msg)
         if msg.get('requestType', None) == 'addProcessingServer':
