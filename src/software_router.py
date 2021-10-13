@@ -73,10 +73,12 @@ class SoftwareRouter():
         """
         logging.info("Connecting to cytomine core")
         try:
-            core = cytomine.Cytomine.connect(self.settings['core']['url'],
-                                             self.settings['core']['publicKey'],
-                                             self.settings['core']['privateKey']
-                                             )
+            core = cytomine.Cytomine(
+                host=self.settings['core']['url'],
+                public_key=self.settings['core']['publicKey'],
+                private_key=self.settings['core']['privateKey'],
+                logging_handlers=logging.getLoggerClass().root.handlers
+            )
             if core.current_user:
                 self.core = core
                 return
