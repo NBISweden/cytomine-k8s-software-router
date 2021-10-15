@@ -3,6 +3,7 @@
 This is a Cytomine software router for use in kubernetes.
 """
 
+import re
 import os
 import time
 import json
@@ -17,8 +18,37 @@ import pika
 import cytomine
 from cytomine.models.software import Job
 from cytomine.models.property import AttachedFile
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 
 from json.decoder import JSONDecodeError
+
+def kube_label(name: str) -> str:
+    """
+    kubernetes job names must bu only lower case alphanumeric characters, or
+    '-', and start and end on an alphanumeric character.
+    """
+    new_name = ""
+    found_first = False
+    for c in name.lower():
+        if not found_first and c in '.-':
+            continue
+        found_first = True
+        if re.match('[a-z0-9]', c):
+            new_name += c
+            continue
+        c = '-'
+        if new_name[-1] not in "-":
+            new_name += c
+    while new_name[-1] in '-':
+        new_name = new_name[:-1]
+    return new_name
+
+def kube_job_label(job_msg) -> str:
+    """
+    Convenience function to crate a job label from a job message
+    """
+    return kube_label(f"{job_msg.name}-{job_msg.number}")
 
 class SoftwareRouter():
     """
@@ -34,6 +64,10 @@ class SoftwareRouter():
         self.core = None
         self.rabbitmq = None
 
+        # kubernetes job stuff
+        self.kube_config = config.load_incluster_config()
+        self.jobs_api = client.BatchV1Api()
+
         self.channel = None
 
     def _create_channel(self, connection):
@@ -43,6 +77,36 @@ class SoftwareRouter():
         self.channel = self.rabbitmq.channel(
             on_open_callback=self.add_default_queue
         )
+
+    def _create_kubernetes_job(self, job: Software) -> client.V1Job:
+        """
+        Creates a kubernetes `client.V1Job` from a cytomine `Software`
+        specification.
+        Warning: currently, this function only creates a test job that sleeps
+        for 10 seconds.
+        """
+        job_name = kube_job_label(job)
+
+        container = client.V1Container(
+            name=job_name,
+            image="busybox",
+            args=["sleep", "10"])
+
+        template = client.V1beta1JobTemplateSpec(
+            metadata=client.V1ObjectMeta(
+                labels={"app": "cytomine"}),
+                spec=client.V1PodSpec(
+                    restart_policy='Never',
+                    containers=[container]
+                ))
+        spec=client.V1JobSpec(template=template)
+        kube_job = client.V1Job(
+            api_version="batch/v1",
+            kind="Job",
+            metadata=client.V1ObjectMeta(name=job_name),
+            spec=spec)
+
+        return kube_job
 
     def _load_settings(self, filename):
         """
@@ -54,6 +118,89 @@ class SoftwareRouter():
         except FileNotFoundError:
             logging.error("Settings file not found")
             return None
+
+    def _kill_job(self, message):
+        """
+        Deletes the job specified in the message
+        """
+        logging.info("Killing job %i", message['jobId'])
+
+        job = Job().fetch(message['jobId'])
+        job_name = kube_job_label(job)
+        self.jobs_api.delete_namespaced_job(job_name, "default",
+            propagation_policy='Background')
+        job.status = Job.TERMINATED
+        job.update()
+
+    def _run_job(self, message):
+        """
+        Runs a kubernetes job as defined by a cytomine job message.
+        """
+        logging.info("Starting job %i", message['jobId'])
+        logging.info("message: %s", message)
+
+        # Fetch the job data from core
+        job = Job().fetch(message['jobId'])
+
+        # accept the job
+        job.status = Job.INQUEUE
+        job.update()
+
+        # create a kubernetes job from the job spec
+        try:
+            kube_job = self._create_kubernetes_job(job)
+        except ApiException as e:
+            logging.error("Couldn't create kubernetes job: %s", e)
+            return
+
+        # start the job
+        try:
+            job_spec = self.jobs_api.create_namespaced_job("default", kube_job)
+        except ApiException as e:
+            logging.error("Couldn't create kubernetes job: %s", e)
+            return
+        job_name = job_spec.metadata.name
+
+        # check job status until the job finishes
+        while True:
+            try:
+                status = self.jobs_api.read_namespaced_job_status(job_name,
+                    "default")
+            except ApiException as e:
+                logging.error("Couldn't read job status: %s", e)
+                break
+            if status.status.completion_time:
+                job.progress = 100
+                job.status = Job.SUCCESS
+                job.update()
+                break
+            elif status.status.failed:
+                job.status = Job.FAILED
+                job.update()
+                break
+            elif job.status != Job.RUNNING and status.status.start_time:
+                job.status = Job.RUNNING
+                job.update()
+            time.sleep(.5)
+
+        # send log if the job was successful
+        if job.status == job.SUCCESS:
+            with tempfile.TemporaryDirectory() as tempdir:
+                filename = os.path.join(tempdir, 'log.out')
+                with open(filename, 'w') as result:
+                    result.write("This was just a fake job. Sorry.\n")
+                    result.flush()
+                    AttachedFile(job, filename).save()
+                    job.update()
+        else:
+            job.status = Job.FAILED
+            job.update()
+
+        try:
+            self.jobs_api.delete_namespaced_job(job_name, "default",
+                propagation_policy='Background')
+        except ApiException as e:
+            logging.error("Couldn't create kubernetes job: %s", e)
 
     def add_queue(self, queue: str, callback: FunctionType, durable=True):
         """
@@ -121,46 +268,12 @@ class SoftwareRouter():
         """
         # TODO: make a proper message parser with content checking
         msg = json.loads(body)
-        logging.info("msg: %s", msg)
+        ch.basic_ack(method.delivery_tag)
         if msg['requestType'] == 'execute':
-            logging.info("Starting job %i", msg['jobId'])
-
-            # Fetch the job from core
-            job = Job().fetch(msg['jobId'])
-
-            # fake that the job goes through some statuses
-            for status in [Job.INQUEUE, Job.RUNNING]:
-                job.status = status
-                job.update()
-                time.sleep(3)
-
-            # Make the progress bar move!
-            for progress in range(0, 101, 10):
-                job.progress = progress
-                job.update()
-                time.sleep(.5)
-
-            # report success, and attach a log file to the job.
-            job.status = Job.SUCCESS
-            job.update()
-
-            with tempfile.TemporaryDirectory() as tempdir:
-                filename = os.path.join(tempdir, 'log.out')
-                with open(filename, 'w') as result:
-                    result.write("This was just a fake job. Sorry.\n")
-                    result.flush()
-                    AttachedFile(job, filename).save()
-                    job.update()
-
+            self._run_job(msg)
 
         elif msg['requestType'] == 'kill':
-            logging.info("Killing job %i", msg['jobId'])
-
-            job = Job().fetch(msg['jobId'])
-            job.status = Job.TERMINATED
-            job.update()
-
-        ch.basic_ack(method.delivery_tag)
+            self._kill_job(msg)
 
     def queue_callback(self, ch, method, properties, body):
         """
@@ -211,7 +324,7 @@ if __name__ ==  "__main__":
         if software_router.core and not software_router.rabbitmq:
             software_router.connect_to_rabbitmq()
 
-            # Add main channel if the connection worked
+            # Start the rabbitmq ioloop
             if software_router.rabbitmq:
                 software_router.start()
 
