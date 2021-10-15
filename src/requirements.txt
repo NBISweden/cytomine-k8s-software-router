@@ -1,6 +1,7 @@
 pyaml==21.8.3
 PyYAML==5.4.1
 pika==1.2.0
+PyGithub==1.55
 kubernetes==18.20.0
 
 # These are cytomine dependencies that are needed until the versions are fixed

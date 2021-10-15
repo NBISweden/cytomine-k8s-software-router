@@ -9,3 +9,6 @@ rabbitmq:
   password:
   queue:
   exchange:
+github:
+  username:
+  password:

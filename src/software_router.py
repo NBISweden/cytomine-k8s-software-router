@@ -16,8 +16,10 @@ import yaml
 
 import pika
 import cytomine
-from cytomine.models.software import Job
+from cytomine.models import Software
+from cytomine.models.software import Job, Software
 from cytomine.models.property import AttachedFile
+from github import Github, GithubException
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -62,13 +64,26 @@ class SoftwareRouter():
         self.settings = self._load_settings(settings)
 
         self.core = None
+        self.server = None
         self.rabbitmq = None
+        self.github = None
 
         # kubernetes job stuff
         self.kube_config = config.load_incluster_config()
         self.jobs_api = client.BatchV1Api()
+        self.core_api = client.CoreV1Api()
 
         self.channel = None
+
+    def _connect_to_github(self):
+        """
+        Connects to github
+        """
+        logging.info("Creating github connection")
+        username = self.settings['github']['username']
+        password = self.settings['github']['password']
+
+        self.github = Github(username, password)
 
     def _create_channel(self, connection):
         """
@@ -90,7 +105,7 @@ class SoftwareRouter():
         container = client.V1Container(
             name=job_name,
             image="busybox",
-            args=["sleep", "10"])
+            args=["echo", "this was a triumph."])
 
         template = client.V1beta1JobTemplateSpec(
             metadata=client.V1ObjectMeta(
@@ -186,9 +201,21 @@ class SoftwareRouter():
         # send log if the job was successful
         if job.status == job.SUCCESS:
             with tempfile.TemporaryDirectory() as tempdir:
+
+                # get uid for the job:
+                job_uid = status.metadata.labels['controller-uid']
+                # get pods from the uid
+                pod_label_selector=f"controller-uid={job_uid}"
+                pods = self.core_api.list_namespaced_pod(namespace="default",
+                  label_selector=pod_label_selector)
+                pod_name=pods.items[0].metadata.name
+                # get log from the first pod
+                log = self.core_api.read_namespaced_pod_log(pod_name, "default")
+
                 filename = os.path.join(tempdir, 'log.out')
                 with open(filename, 'w') as result:
-                    result.write("This was just a fake job. Sorry.\n")
+                    # write the kubernetes log to the result file
+                    result.write(log)
                     result.flush()
                     AttachedFile(job, filename).save()
                     job.update()
@@ -285,8 +312,77 @@ class SoftwareRouter():
         if msg.get('requestType', None) == 'addProcessingServer':
             logging.info("new processing server: %s", msg['name'])
             self.add_queue(msg['name'], self.on_job)
+            #software_router.update_software("cytomine")
 
         ch.basic_ack(method.delivery_tag)
+
+    def add_fake_software(self):
+        """
+        Adds a fake testing-job to the system
+        """
+        logging.info("Adding fake software 'test'")
+        algorithm = Software(
+            name="test",
+            fullName="Fake Testing Job",
+            softwareVersion="v1.0",
+            defaultProcessingServer=101, # important, makes the jobs come here
+            Parameters=[],
+            executable=True,
+            executeCommand="sleep 10",
+            pullingCommand="sleep 1"
+        )
+
+        algorithm.save()
+
+    def update_software(self, github_user, prefix="S_"):
+        """
+        Updates the available softwares list for the given github user and
+        prefix.
+        """
+        logging.info("Adding software from github/%s", github_user)
+        if self.github == None:
+            self._connect_to_github()
+
+        # TODO: Make checks to see if the software already exists
+        user = self.github.get_user(github_user)
+        for repo in [r for r in user.get_repos() if r.name.startswith(prefix)]:
+            logging.info("Adding %s", repo.name)
+            try:
+                # Get the latest release
+                release = repo.get_latest_release()
+                if not release:
+                    logging.warning("Not added. No releases.")
+                    continue
+
+                # get tag to get the target commit from the release
+                tag = [t for t in repo.get_tags() if t.name == release.tag_name]
+                if len(tag) < 0:
+                    logging.warning("Not added. No release tag.")
+                    continue
+                tag = tag[0]
+
+                # Get the descriptor from the commit references from the tag
+                descriptor = repo.get_contents("descriptor.json",
+                                               ref=tag.commit.sha)
+                attributes = json.loads(descriptor.decoded_content.decode())
+
+                # A bunch of stuff needs to be adjusted between the json and
+                # attributes dict, so we try to do that here
+                #attributes = parse_descriptor(file_content)
+                algorithm = Software(**attributes)
+
+                # set algorithm values
+                algorithm.softwareVersion = release.title
+                algorithm.executeCommand = attributes["command-line"]
+                algorithm.pullingCommand = "docker pull"
+                algorithm.defaultProcessingServer = 101
+                algorithm.executable = True
+
+                # save to create the object in core
+                algorithm.save()
+            except GithubException as e:
+                logging.error("No descriptor.json file for %s: %s",
+                              repo.name, e)
 
     def start(self):
         """
@@ -317,6 +413,10 @@ if __name__ ==  "__main__":
 
         if not software_router.core:
             software_router.connect_to_core()
+
+        # update the default software when we've connected to core
+        if software_router.core:
+            software_router.add_fake_software()
 
         # Don't connect to rabbitmq until there is a connection to core. This is
         # mainly because core tends to crash if the main queue is created before
