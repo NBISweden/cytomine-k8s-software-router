@@ -254,15 +254,16 @@ class SoftwareRouter():
                 host=self.settings['core']['url'],
                 public_key=self.settings['core']['publicKey'],
                 private_key=self.settings['core']['privateKey'],
+                protocol=self.settings['core'].get('protocol', None),
                 logging_handlers=logging.getLoggerClass().root.handlers
             )
             if core.current_user:
                 self.core = core
                 return
-        except JSONDecodeError:
-            logging.error("Failed to connect to cytomine core")
-        except requests.exceptions.ConnectionError:
-            logging.error("Failed to connect to cytomine core")
+        except JSONDecodeError as e:
+            logging.error("Failed to parse settings file: %s", e)
+        except requests.exceptions.ConnectionError as e:
+            logging.error("Failed to connect: %s", e)
         except yaml.parser.ParserError:
             logging.error("Failed to read settings yaml file")
         self.core = None

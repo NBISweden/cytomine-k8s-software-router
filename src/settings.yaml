@@ -2,6 +2,7 @@ core:
   url:
   publicKey:
   privateKey:
+  protocol:
 rabbitmq:
   host:
   port:
