@@ -110,7 +110,8 @@ class SoftwareRouter():
                 labels={"app": "cytomine"}),
                 spec=client.V1PodSpec(
                     restart_policy='Never',
-                    containers=[container]
+                    containers=[container],
+                    service_account=self.settings['serviceaccount']
                 ))
         spec=client.V1JobSpec(template=template)
         kube_job = client.V1Job(
