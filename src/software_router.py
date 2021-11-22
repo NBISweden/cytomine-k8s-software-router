@@ -25,6 +25,8 @@ from kubernetes.client.rest import ApiException
 
 from json.decoder import JSONDecodeError
 
+from settings import Settings
+
 def kube_label(name: str) -> str:
     """
     kubernetes job names must bu only lower case alphanumeric characters, or
@@ -57,11 +59,11 @@ class SoftwareRouter():
     Cytomine Software router implementation for kubernetes
     """
 
-    def __init__(self, settings):
+    def __init__(self, settings_file):
         """
-        Reads a yaml settings file `settings`.
+        Reads a yaml settings file `settings_file`.
         """
-        self.settings = self._load_settings(settings)
+        self.settings = Settings(settings_file)
 
         self.core = None
         self.server = None
@@ -80,8 +82,8 @@ class SoftwareRouter():
         Connects to github
         """
         logging.info("Creating github connection")
-        username = self.settings['github']['username']
-        password = self.settings['github']['password']
+        username = self.settings.github.username
+        password = self.settings.github.password
 
         self.github = Github(username, password)
 
@@ -111,7 +113,7 @@ class SoftwareRouter():
                 spec=client.V1PodSpec(
                     restart_policy='Never',
                     containers=[container],
-                    service_account=self.settings['serviceaccount']
+                    service_account=self.settings.serviceaccount
                 ))
         spec=client.V1JobSpec(template=template)
         kube_job = client.V1Job(
@@ -121,17 +123,6 @@ class SoftwareRouter():
             spec=spec)
 
         return kube_job
-
-    def _load_settings(self, filename):
-        """
-        Returns a settings dictionary from the data in `filename` or None
-        """
-        logging.info("Reading settings file %s", filename)
-        try:
-            return yaml.safe_load(open(filename).read())
-        except FileNotFoundError:
-            logging.error("Settings file not found")
-            return None
 
     def _kill_job(self, message):
         """
@@ -241,7 +232,7 @@ class SoftwareRouter():
         """
         Adds the default rabbitmq queue as `settings.rabbitmq.queue`.
         """
-        self.add_queue(self.settings['rabbitmq']['queue'],
+        self.add_queue(self.settings.rabbitmq.queue,
                        self.queue_callback)
 
     def connect_to_core(self):
@@ -252,10 +243,10 @@ class SoftwareRouter():
         logging.info("Connecting to cytomine core")
         try:
             core = cytomine.Cytomine(
-                host=self.settings['core']['url'],
-                public_key=self.settings['core']['publicKey'],
-                private_key=self.settings['core']['privateKey'],
-                protocol=self.settings['core'].get('protocol', None),
+                host=self.settings.core.url,
+                public_key=self.settings.core.public_key,
+                private_key=self.settings.core.private_key,
+                protocol=self.settings.core.protocol,
                 logging_handlers=logging.getLoggerClass().root.handlers
             )
             if core.current_user:
@@ -276,11 +267,11 @@ class SoftwareRouter():
         logging.info("Connecting to rabbitmq")
         try:
             connection_params = pika.ConnectionParameters(
-                host=self.settings['rabbitmq']['host'],
-                port=self.settings['rabbitmq']['port'],
+                host=self.settings.rabbitmq.host,
+                port=self.settings.rabbitmq.port,
                 credentials=pika.PlainCredentials(
-                    self.settings['rabbitmq']['username'],
-                    self.settings['rabbitmq']['password'])
+                    self.settings.rabbitmq.username,
+                    self.settings.rabbitmq.password)
             )
             self.rabbitmq = pika.SelectConnection(connection_params,
                 on_open_callback=self._create_channel

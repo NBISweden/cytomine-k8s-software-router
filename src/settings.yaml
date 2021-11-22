@@ -1,7 +1,7 @@
 core:
   url:
-  publicKey:
-  privateKey:
+  public_key:
+  private_key:
   protocol:
 rabbitmq:
   host:
@@ -14,3 +14,5 @@ github:
   username:
   password:
 serviceaccount:
+software_repos:
+  - cytomine
