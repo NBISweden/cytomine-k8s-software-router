@@ -303,7 +303,8 @@ class SoftwareRouter():
         if msg.get('requestType', None) == 'addProcessingServer':
             logging.info("new processing server: %s", msg['name'])
             self.add_queue(msg['name'], self.on_job)
-            software_router.update_software("cytomine")
+            software_router.update_software("cytomine",
+                                            msg['processingServerId'])
 
         ch.basic_ack(method.delivery_tag)
 
@@ -338,7 +339,7 @@ class SoftwareRouter():
             value_key="TEST_PARAM"
         ).save()
 
-    def update_software(self, github_user, prefix="S_"):
+    def update_software(self, github_user, server_id=101, prefix="S_"):
         """
         Updates the available softwares list for the given github user and
         prefix.
@@ -383,7 +384,7 @@ class SoftwareRouter():
                 algorithm.executeCommand = attributes["command-line"]
                 algorithm.pullingCommand = \
                     f"{attributes['container-image']['image']}:{tag.name}"
-                algorithm.defaultProcessingServer = 101
+                algorithm.defaultProcessingServer = server_id
                 algorithm.executable = True
                 algorithm.inputs = None
 
