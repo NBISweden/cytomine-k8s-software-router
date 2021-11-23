@@ -34,6 +34,7 @@ class Settings():
         Sets default values for all settings, lthen loads the given settings
         file by calling `load_yaml(filename)`.
         """
+        self.name = ""
         self.core = Namespace(
             url="core",
             public_key="",

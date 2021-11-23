@@ -1,3 +1,4 @@
+name: local-server
 core:
   url:
   public_key:

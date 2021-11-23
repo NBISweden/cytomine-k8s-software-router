@@ -16,7 +16,11 @@ import yaml
 
 import pika
 import cytomine
-from cytomine.models import Software, SoftwareParameter
+from cytomine.models import (
+    ProcessingServerCollection,
+    Software,
+    SoftwareParameter
+)
 from cytomine.models.software import Job, Software
 from cytomine.models.property import AttachedFile
 from github import Github, GithubException
@@ -64,6 +68,8 @@ class SoftwareRouter():
         Reads a yaml settings file `settings_file`.
         """
         self.settings = Settings(settings_file)
+        self.name = self.settings.name
+        self.id = None
 
         self.core = None
         self.server = None
@@ -251,6 +257,7 @@ class SoftwareRouter():
             )
             if core.current_user:
                 self.core = core
+                self.get_core_id()
                 return
         except JSONDecodeError as e:
             logging.error("Failed to parse settings file: %s", e)
@@ -280,6 +287,17 @@ class SoftwareRouter():
             logging.error("Couldn't connect to rabbitmq")
             self.rabbitmq = None
 
+    def get_core_id(self):
+        """
+        Checks the software router list in `self.core` to get own id.
+        """
+        servers = self.core.get_collection(ProcessingServerCollection())
+        for server in servers:
+            if server.name == self.name:
+                self.id = server.id
+                logging.info("Setting server id: %s", self.id)
+                break
+
     def on_job(self, ch, method, properties, body):
         """
         Handles cytomine job requests.
@@ -300,6 +318,15 @@ class SoftwareRouter():
         # TODO: make a proper message parser with content checking
         msg = json.loads(body)
         logging.info("Received: %s", msg)
+
+        # reject messages with the wrong server id
+        logging.info("%s%s, %s%s", type(msg['processingServerId']), msg['processingServerId'], type(self.id), self.id)
+        if msg.get('processingServerId', -1) != self.id:
+            logging.warning("Rejected processing server due to wrong id")
+            ch.basic_nack(method.delivery_tag)
+            return
+
+        # otherwise, add a processing server
         if msg.get('requestType', None) == 'addProcessingServer':
             logging.info("new processing server: %s", msg['name'])
             self.add_queue(msg['name'], self.on_job)
