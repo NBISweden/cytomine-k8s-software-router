@@ -272,7 +272,7 @@ class SoftwareRouter():
         """
         Adds a github software repository to the list of repositories
         """
-        repo = Repository(repo_name, prefix, user, password, dev=True)
+        repo = Repository(repo_name, prefix, user, password, dev=False)
         repo.load_software()
         self.repositories[repo_name] = repo
 
