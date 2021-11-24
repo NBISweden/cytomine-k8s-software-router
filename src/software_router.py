@@ -18,18 +18,17 @@ import pika
 import cytomine
 from cytomine.models import (
     ProcessingServerCollection,
-    Software,
-    SoftwareParameter
+    SoftwareCollection
 )
-from cytomine.models.software import Job, Software
+from cytomine.models.software import Job, Software, SoftwareParameter
 from cytomine.models.property import AttachedFile
-from github import Github, GithubException
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 from json.decoder import JSONDecodeError
 
 from settings import Settings
+from repository import Repository
 
 def kube_label(name: str) -> str:
     """
@@ -74,7 +73,12 @@ class SoftwareRouter():
         self.core = None
         self.server = None
         self.rabbitmq = None
-        self.github = None
+        self.repositories = {}
+        for repo in self.settings.software_repos:
+            self.add_repo(repo,
+                          prefix="S_",
+                          user=self.settings.github.username,
+                          password=self.settings.github.password)
 
         # kubernetes job stuff
         self.kube_config = config.load_incluster_config()
@@ -82,16 +86,6 @@ class SoftwareRouter():
         self.core_api = client.CoreV1Api()
 
         self.channel = None
-
-    def _connect_to_github(self):
-        """
-        Connects to github
-        """
-        logging.info("Creating github connection")
-        username = self.settings.github.username
-        password = self.settings.github.password
-
-        self.github = Github(username, password)
 
     def _create_channel(self, connection):
         """
@@ -241,6 +235,14 @@ class SoftwareRouter():
         self.add_queue(self.settings.rabbitmq.queue,
                        self.queue_callback)
 
+    def add_repo(self, repo_name, prefix="S_", user=None, password=None):
+        """
+        Adds a github software repository to the list of repositories
+        """
+        repo = Repository(repo_name, prefix, user, password, dev=False)
+        repo.load_software()
+        self.repositories[repo_name] = repo
+
     def connect_to_core(self):
         """
         Connects to cytomine core and sets `self.core` to a cytomine object, or
@@ -258,6 +260,7 @@ class SoftwareRouter():
             if core.current_user:
                 self.core = core
                 self.get_core_id()
+                self.update_core_software()
                 return
         except JSONDecodeError as e:
             logging.error("Failed to parse settings file: %s", e)
@@ -317,10 +320,8 @@ class SoftwareRouter():
         """
         # TODO: make a proper message parser with content checking
         msg = json.loads(body)
-        logging.info("Received: %s", msg)
 
         # reject messages with the wrong server id
-        logging.info("%s%s, %s%s", type(msg['processingServerId']), msg['processingServerId'], type(self.id), self.id)
         if msg.get('processingServerId', -1) != self.id:
             logging.warning("Rejected processing server due to wrong id")
             ch.basic_nack(method.delivery_tag)
@@ -330,126 +331,38 @@ class SoftwareRouter():
         if msg.get('requestType', None) == 'addProcessingServer':
             logging.info("new processing server: %s", msg['name'])
             self.add_queue(msg['name'], self.on_job)
-            software_router.update_software("cytomine",
-                                            msg['processingServerId'])
 
         ch.basic_ack(method.delivery_tag)
 
-    def add_fake_software(self):
+    def update_core_software(self):
         """
-        Adds a fake testing-job to the system. This can be useful when debugging
-        the system instead of loading the real software from github.
+        Compares the software stored in `self.repositories` with that in
+        `self.core`.
         """
-        logging.info("Adding fake software 'test'")
-        # There aren't that many fields in the Software class, and since we
-        # don't need the pullingCommand when running in kubernetes we use it
-        # to hold image name.
-        algorithm = Software(
-            name="test",
-            fullName="Fake Testing Job",
-            softwareVersion="v1.0",
-            defaultProcessingServer=101, # important, makes the jobs come here
-            Parameters=[],
-            executable=True,
-            executeCommand="echo [TEST_PARAM]",
-            pullingCommand="busybox:latest"
-        )
-        algorithm.save()
+        if not self.id:
+            logging.warning("Can't add software without processing server id")
+            return
 
-        SoftwareParameter(
-            name="test_param",
-            type="Number",
-            id_software=algorithm.id,
-            default_value=3,
-            human_name="Test parameter",
-            command_line_flag="--test-param",
-            value_key="TEST_PARAM"
-        ).save()
+        logging.info("Updating core software")
+        current_software = self.core.get_collection(SoftwareCollection())
+        software_names =  [s.name for s in current_software]
+        for _, repo in self.repositories.items():
+            for name, data in repo.software.items():
 
-    def update_software(self, github_user, server_id=101, prefix="S_"):
-        """
-        Updates the available softwares list for the given github user and
-        prefix.
-        """
-        logging.info("Adding software from github/%s", github_user)
-        if self.github == None:
-            self._connect_to_github()
+                if name not in software_names: # software does not exist already
 
-        # TODO: Make checks to see if the software already exists
-        user = self.github.get_user(github_user)
-        for repo in [r for r in user.get_repos() if r.name.startswith(prefix)]:
-            logging.info("Adding %s", repo.name)
-            try:
-                # Get the latest release
-                release = repo.get_latest_release()
-                if not release:
-                    logging.warning("Not added. No releases.")
-                    continue
+                    data['algorithm']['defaultProcessingServer'] = self.id
+                    software = Software(**data['algorithm'])
+                    software.save()
+                    for param in data['params']:
+                        param['id_software'] = software.id
+                        software_param = SoftwareParameter(**param)
+                        software_param.save()
+                    logging.info("%s: Added", name)
+                else:
+                    logging.info("%s: Already available", name)
+                    # TODO: Check if software needs update
 
-                # get tag to get the target commit from the release
-                tag = [t for t in repo.get_tags() if t.name == release.tag_name]
-                if len(tag) < 0:
-                    logging.warning("Not added. No release tag.")
-                    continue
-                tag = tag[0]
-
-                # Get the descriptor from the commit references from the tag
-                descriptor = repo.get_contents("descriptor.json",
-                                               ref=tag.commit.sha)
-                attributes = json.loads(descriptor.decoded_content.decode())
-
-                # A bunch of stuff needs to be adjusted between the json and
-                # attributes dict, so we try to do that here
-                #attributes = parse_descriptor(file_content)
-                algorithm = Software(**attributes)
-
-                # set algorithm values
-                # There aren't that many fields in the Software class, and since
-                # we don't need the pullingCommand when running in kubernetes we
-                # use it to hold image name.
-                algorithm.softwareVersion = release.title
-                algorithm.executeCommand = attributes["command-line"]
-                algorithm.pullingCommand = \
-                    f"{attributes['container-image']['image']}:{tag.name}"
-                algorithm.defaultProcessingServer = server_id
-                algorithm.executable = True
-                algorithm.inputs = None
-
-                # save to create the object in core, and get an id
-                algorithm.save()
-
-                # add params
-                for param in attributes['inputs']:
-                    # I think all of these are correct, but there are a bunch of
-                    # guesswork here.
-                    parameter = SoftwareParameter(
-                        name=param.get('id', ""),
-                        type=param.get('type', None),
-                        id_software=algorithm.id,
-                        set_by_server=param.get('set-by-server', None),
-                        required=not param.get('optional', True),
-                        default_value=param.get('default-value', None),
-                        human_name=param.get('description', None),
-                        command_line_flag=param.get('command-line-flag', None),
-                        value_key=param.get('value-key', None),
-                        uri=param.get('uri', None),
-                        # Note that "attribut" is not a typo here
-                        uri_sort_attribut=param.get('uri-sort-attribute', None),
-                        uri_print_attribut=param.get('uri-print-attribute',
-                                                     None),
-                    )
-                    # handle convenience variables
-                    # TODO: handle as a general case.
-                    if parameter.valueKey == "[@ID]":
-                        parameter.valueKey = f"[{param.get('id', '').upper()}]"
-                    if parameter.commandLineFlag == "--@id":
-                        parameter.commandLineFlag = f"--{param.get('id', '').lower()}"
-
-                    parameter.save()
-
-            except GithubException as e:
-                logging.error("No descriptor.json file for %s: %s",
-                              repo.name, e)
 
     def start(self):
         """

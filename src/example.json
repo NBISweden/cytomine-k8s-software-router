@@ -1,0 +1,67 @@
+{
+    "name": "Python_Software_Example",
+    "description": "Basic example of an external software pluggable to the Cytomine platform. Will return a file containing the unique input value.",
+    "container-image": {
+      "image": "cytomine/s_python_software_example",
+      "type": "singularity"
+    },
+    "command-line": "[CYTOMINE_HOST] [CYTOMINE_PUBLIC_KEY] [CYTOMINE_PRIVATE_KEY] [CYTOMINE_ID_PROJECT] [CYTOMINE_ID_SOFTWARE] [MY_INTEGER_PARAMETER]",
+    "inputs": [
+      {
+        "id": "cytomine_host",
+        "value-key": "[@ID]",
+        "command-line-flag": "--@id",
+        "name": "Cytomine host",
+        "set-by-server": true,
+        "optional": false,
+        "type": "String"
+      },
+      {
+        "id": "cytomine_public_key",
+        "value-key": "[@ID]",
+        "command-line-flag": "--@id",
+        "name": "Cytomine public key",
+        "set-by-server": true,
+        "optional": false,
+        "type": "String"
+      },
+      {
+        "id": "cytomine_private_key",
+        "value-key": "[@ID]",
+        "command-line-flag": "--@id",
+        "name": "Cytomine private key",
+        "set-by-server": true,
+        "optional": false,
+        "type": "String"
+      },
+      {
+        "id": "cytomine_id_project",
+        "value-key": "[@ID]",
+        "command-line-flag": "--@id",
+        "name": "Cytomine project ID",
+        "set-by-server": true,
+        "optional": false,
+        "type": "Number"
+      },
+      {
+        "id": "cytomine_id_software",
+        "value-key": "[@ID]",
+        "command-line-flag": "--@id",
+        "name": "Cytomine software ID",
+        "set-by-server": true,
+        "optional": false,
+        "type": "Number"
+      },
+      {
+        "id": "my_integer_parameter",
+        "value-key": "[@ID]",
+        "command-line-flag": "--@id",
+        "name": "Example integer parameter",
+        "set-by-server": false,
+        "optional": false,
+        "type": "Number"
+      }
+    ],
+
+    "schema-version": "cytomine-0.1"
+  }
