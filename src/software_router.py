@@ -10,6 +10,8 @@ import json
 import logging
 import requests
 import tempfile
+from threading import Thread
+from time import sleep
 from types import FunctionType
 
 import yaml
@@ -22,6 +24,7 @@ from cytomine.models import (
 )
 from cytomine.models.software import Job, Software, SoftwareParameter
 from cytomine.models.property import AttachedFile
+from cytomine.models.user import CurrentUser
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -85,7 +88,17 @@ class SoftwareRouter():
         self.jobs_api = client.BatchV1Api()
         self.core_api = client.CoreV1Api()
 
+        # Thread for checking if we're still connected to core
+        self.core_ping_thread = None
+        self.exiting = False
+        self.start_ping_thread()
+
         self.channel = None
+
+    def __del__(self):
+        self.exiting = True
+        if self.core_ping_thread:
+            self.core_ping_thread.join()
 
     def _create_channel(self, connection):
         """
@@ -94,6 +107,26 @@ class SoftwareRouter():
         self.channel = self.rabbitmq.channel(
             on_open_callback=self.add_default_queue
         )
+
+    def ping_core(self, interval=10):
+        while not self.exiting:
+            if self.core:
+                self.core
+                user = CurrentUser().fetch()
+                if not user:
+                    self.core = None
+            if not self.core:
+                self.connect_to_core()
+            sleep(interval)
+
+
+    def start_ping_thread(self):
+        """
+        Starts a separate thread `self.core_ping_thread` that keeps requesting
+        """
+        logging.info("Starting ping thread")
+        self.core_ping_thread = Thread(target=self.ping_core)
+        self.core_ping_thread.start()
 
     def _create_kubernetes_job(self, job: Software, message: dict) -> client.V1Job:
         """
@@ -239,7 +272,7 @@ class SoftwareRouter():
         """
         Adds a github software repository to the list of repositories
         """
-        repo = Repository(repo_name, prefix, user, password, dev=False)
+        repo = Repository(repo_name, prefix, user, password, dev=True)
         repo.load_software()
         self.repositories[repo_name] = repo
 
@@ -363,7 +396,6 @@ class SoftwareRouter():
                     logging.info("%s: Already available", name)
                     # TODO: Check if software needs update
 
-
     def start(self):
         """
         Starts the rabbitmq ioloop
@@ -390,9 +422,6 @@ if __name__ ==  "__main__":
 
     # Main loop. Mostly used to make sure that all connections are established
     while True:
-
-        if not software_router.core:
-            software_router.connect_to_core()
 
         # Don't connect to rabbitmq until there is a connection to core. This is
         # mainly because core tends to crash if the main queue is created before
