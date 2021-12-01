@@ -2,7 +2,7 @@
 # Simplifies buidling and pushing to dockerhub
 #
 
-TAG = norling/k8s-software-router
+TAG = nbisweden/k8s-software-router
 
 all: build
 
