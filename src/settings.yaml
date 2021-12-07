@@ -1,4 +1,19 @@
+name: local-server
 core:
   url:
-  publicKey:
-  privateKey:
+  public_key:
+  private_key:
+  protocol:
+rabbitmq:
+  host:
+  port:
+  username:
+  password:
+  queue:
+  exchange:
+github:
+  username:
+  password:
+serviceaccount:
+software_repos:
+  - cytomine
