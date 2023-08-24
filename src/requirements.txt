@@ -7,7 +7,7 @@ kubernetes==18.20.0
 # These are cytomine dependencies that are needed until the versions are fixed
 # in the github.com/cytomine/Cytomine-python-client repo
 CacheControl==0.12.5
-certifi==2018.10.15
+certifi==2023.7.22
 chardet==3.0.4
 future==0.17.1
 idna==2.7
